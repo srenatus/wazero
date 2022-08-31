@@ -230,7 +230,7 @@ func (c *arm64Compiler) compileMaybeGrowValueStack() error {
 	// "tmpX = len(ce.valueStack)"
 	c.assembler.CompileMemoryToRegister(
 		arm64.LDRD,
-		arm64ReservedRegisterForCallEngine, callEngineGlobalContextValueStackLenInBytesOffset,
+		arm64ReservedRegisterForCallEngine, callEngineValueStackContextValueStackLenInBytesOffset,
 		tmpX,
 	)
 
@@ -4095,7 +4095,7 @@ func (c *arm64Compiler) compileReleaseRegisterToStack(loc *runtimeValueLocation)
 func (c *arm64Compiler) compileReservedStackBasePointerRegisterInitialization() {
 	// First, load the address of the first element in the value stack into arm64ReservedRegisterForStackBasePointerAddress temporarily.
 	c.assembler.CompileMemoryToRegister(arm64.LDRD,
-		arm64ReservedRegisterForCallEngine, callEngineGlobalContextValueStackElement0AddressOffset,
+		arm64ReservedRegisterForCallEngine, callEngineValueStackContextValueStackElement0AddressOffset,
 		arm64ReservedRegisterForStackBasePointerAddress)
 
 	// next we move the base pointer (ce.stackBasePointer) to arm64ReservedRegisterForTemporary.
