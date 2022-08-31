@@ -106,7 +106,7 @@ func (c *controlFrames) push(frame *controlFrame) {
 	c.frames = append(c.frames, frame)
 }
 
-// localIndexToStackHeight initializes localIndexToStackHeight field. See the comment on localIndexToStackHeight.
+// calcLocalIndexToStackHeight initializes localIndexToStackHeight field. See the comment on compiler.localIndexToStackHeightInUint64.
 func (c *compiler) calcLocalIndexToStackHeight() {
 	c.localIndexToStackHeightInUint64 = make(map[uint32]int, len(c.sig.Params)+len(c.localTypes))
 	var current int
@@ -117,6 +117,9 @@ func (c *compiler) calcLocalIndexToStackHeight() {
 		}
 		current++
 	}
+	
+	// Non-func param locals start after the return call frame.
+	current += c.callFrameStackSizeInUint64
 
 	for index, lt := range c.localTypes {
 		index += len(c.sig.Params)
@@ -129,11 +132,12 @@ func (c *compiler) calcLocalIndexToStackHeight() {
 }
 
 type compiler struct {
-	enabledFeatures  wasm.Features
-	stack            []UnsignedType
-	currentID        uint32
-	controlFrames    *controlFrames
-	unreachableState struct {
+	enabledFeatures            wasm.Features
+	callFrameStackSizeInUint64 int
+	stack                      []UnsignedType
+	currentID                  uint32
+	controlFrames              *controlFrames
+	unreachableState           struct {
 		on    bool
 		depth int
 	}
@@ -223,7 +227,7 @@ type CompilationResult struct {
 	HasElementInstances bool
 }
 
-func CompileFunctions(_ context.Context, enabledFeatures wasm.Features, module *wasm.Module) ([]*CompilationResult, error) {
+func CompileFunctions(_ context.Context, enabledFeatures wasm.Features, callFrameStackSizeInUint64 int, module *wasm.Module) ([]*CompilationResult, error) {
 	functions, globals, mem, tables, err := module.AllDeclarations()
 	if err != nil {
 		return nil, err
@@ -252,7 +256,7 @@ func CompileFunctions(_ context.Context, enabledFeatures wasm.Features, module *
 			})
 			continue
 		}
-		r, err := compile(enabledFeatures, sig, code.Body, code.LocalTypes, module.TypeSection, functions, globals)
+		r, err := compile(enabledFeatures, callFrameStackSizeInUint64, sig, code.Body, code.LocalTypes, module.TypeSection, functions, globals)
 		if err != nil {
 			def := module.FunctionDefinitionSection[uint32(funcIndex)+module.ImportFuncCount()]
 			return nil, fmt.Errorf("failed to lower func[%s] to wazeroir: %w", def.DebugName(), err)
@@ -276,6 +280,7 @@ func CompileFunctions(_ context.Context, enabledFeatures wasm.Features, module *
 // so that the resulting operations can be consumed by the interpreter
 // or the Compiler compilation engine.
 func compile(enabledFeatures wasm.Features,
+	callFrameStackSizeInUint64 int,
 	sig *wasm.FunctionType,
 	body []byte,
 	localTypes []wasm.ValueType,
@@ -283,15 +288,16 @@ func compile(enabledFeatures wasm.Features,
 	functions []uint32, globals []*wasm.GlobalType,
 ) (*CompilationResult, error) {
 	c := compiler{
-		enabledFeatures: enabledFeatures,
-		controlFrames:   &controlFrames{},
-		result:          CompilationResult{LabelCallers: map[string]uint32{}},
-		body:            body,
-		localTypes:      localTypes,
-		sig:             sig,
-		globals:         globals,
-		funcs:           functions,
-		types:           types,
+		enabledFeatures:            enabledFeatures,
+		controlFrames:              &controlFrames{},
+		callFrameStackSizeInUint64: callFrameStackSizeInUint64,
+		result:                     CompilationResult{LabelCallers: map[string]uint32{}},
+		body:                       body,
+		localTypes:                 localTypes,
+		sig:                        sig,
+		globals:                    globals,
+		funcs:                      functions,
+		types:                      types,
 	}
 
 	c.calcLocalIndexToStackHeight()
@@ -300,6 +306,9 @@ func compile(enabledFeatures wasm.Features,
 	for _, t := range sig.Params {
 		c.stackPush(wasmValueTypeToUnsignedType(t)...)
 	}
+
+	c.stackReserveReturnCallFrame()
+
 	// Emit const expressions for locals.
 	// Note that here we don't take function arguments
 	// into account, meaning that callers must push
@@ -2978,6 +2987,12 @@ func (c *compiler) stackPop() (ret UnsignedType) {
 
 func (c *compiler) stackPush(ts ...UnsignedType) {
 	c.stack = append(c.stack, ts...)
+}
+
+func (c *compiler) stackReserveReturnCallFrame() {
+	for i := 0; i < c.callFrameStackSizeInUint64; i++ {
+		c.stackPush(UnsignedTypeI64)
+	}
 }
 
 // emit adds the operations into the result.

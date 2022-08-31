@@ -213,6 +213,9 @@ type interpreterOp struct {
 	rs     []*wazeroir.InclusiveRange
 }
 
+// interpreter mode doesn't maintain call frames in the stack, so pass the zero size to the IR.
+const callFrameStackSize = 0
+
 // CompileModule implements the same method as documented on wasm.Engine.
 func (e *engine) CompileModule(ctx context.Context, module *wasm.Module) error {
 	if _, ok := e.getCodes(module); ok { // cache hit!
@@ -220,7 +223,7 @@ func (e *engine) CompileModule(ctx context.Context, module *wasm.Module) error {
 	}
 
 	funcs := make([]*code, 0, len(module.FunctionSection))
-	irs, err := wazeroir.CompileFunctions(ctx, e.enabledFeatures, module)
+	irs, err := wazeroir.CompileFunctions(ctx, e.enabledFeatures, callFrameStackSize, module)
 	if err != nil {
 		return err
 	}

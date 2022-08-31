@@ -14,7 +14,6 @@ import (
 	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/version"
 	"github.com/tetratelabs/wazero/internal/wasm"
-	"github.com/tetratelabs/wazero/internal/wasmdebug"
 	"github.com/tetratelabs/wazero/internal/wasmruntime"
 	"github.com/tetratelabs/wazero/internal/wazeroir"
 )
@@ -63,11 +62,6 @@ type (
 		// Note: We never edit len or cap in compiled code, so we won't get screwed when GC comes in.
 		valueStack []uint64
 
-		// callFrameStack is initially callFrameStack[callFrameStackPointer].
-		// The currently executed function call frame lives at callFrameStack[callFrameStackPointer-1]
-		// and that is equivalent to  engine.callFrameTop().
-		callFrameStack []callFrame
-
 		// compiled is the initial function for this call engine.
 		compiled *function
 		// source is the FunctionInstance from which compiled is created from.
@@ -82,18 +76,6 @@ type (
 		// valueStackLenInBytes is len(engine.valueStack[0]) * 8 (bytes).
 		// Note: this is updated when growing the stack in builtinFunctionGrowValueStack.
 		valueStackLenInBytes uint64
-
-		// callFrameStackElementZeroAddress is &engine.callFrameStack[0] as uintptr.
-		// Note: this is updated when growing the stack in builtinFunctionGrowCallFrameStack.
-		callFrameStackElementZeroAddress uintptr
-		// callFrameStackLen is len(engine.callFrameStack).
-		// Note: this is updated when growing the stack in builtinFunctionGrowCallFrameStack.
-		callFrameStackLen uint64
-		// callFrameStackPointer points at the next empty slot on the call frame stack.
-		// For example, for the next function call, we push the new callFrame onto
-		// callFrameStack[callFrameStackPointer]. This value is incremented/decremented in assembly
-		// when making function calls or returning from them.
-		callFrameStackPointer uint64
 	}
 
 	// moduleContext holds the per-function call specific module information.
@@ -430,7 +412,7 @@ func (e *engine) CompileModule(ctx context.Context, module *wasm.Module) error {
 
 	funcs := make([]*code, 0, len(module.FunctionSection))
 
-	irs, err := wazeroir.CompileFunctions(ctx, e.enabledFeatures, module)
+	irs, err := wazeroir.CompileFunctions(ctx, e.enabledFeatures, callFrameDataSize/4, module)
 	if err != nil {
 		return err
 	}
@@ -579,17 +561,18 @@ func (ce *callEngine) Call(ctx context.Context, callCtx *wasm.CallContext, param
 //
 // This is defined for testability.
 func (ce *callEngine) deferredOnCall(recovered interface{}) (err error) {
-	if recovered != nil {
-		builder := wasmdebug.NewErrorBuilder()
-		for i := uint64(0); i < ce.callFrameStackPointer; i++ {
-			def := ce.callFrameStack[ce.callFrameStackPointer-1-i].function.source.FunctionDefinition
-			builder.AddFrame(def.DebugName(), def.ParamTypes(), def.ResultTypes())
-		}
-		err = builder.FromRecovered(recovered)
-	}
-
-	// Allows the reuse of CallEngine.
-	ce.stackBasePointerInBytes, ce.stackPointer, ce.callFrameStackPointer, ce.moduleInstanceAddress = 0, 0, 0, 0
+	// TODO
+	//if recovered != nil {
+	//	builder := wasmdebug.NewErrorBuilder()
+	//	for i := uint64(0); i < ce.callFrameStackPointer; i++ {
+	//		def := ce.callFrameStack[ce.callFrameStackPointer-1-i].function.source.FunctionDefinition
+	//		builder.AddFrame(def.DebugName(), def.ParamTypes(), def.ResultTypes())
+	//	}
+	//	err = builder.FromRecovered(recovered)
+	//}
+	//
+	//// Allows the reuse of CallEngine.
+	//ce.stackBasePointerInBytes, ce.stackPointer, ce.callFrameStackPointer, ce.moduleInstanceAddress = 0, 0, 0, 0
 	return
 }
 
@@ -638,28 +621,20 @@ func newEngine(ctx context.Context, enabledFeatures wasm.Features) *engine {
 //	[2] https://github.com/golang/go/blob/68ecdc2c70544c303aa923139a5f16caf107d955/src/runtime/mgc.go#L9
 //	[3] https://mayurwadekar2.medium.com/escape-analysis-in-golang-ee40a1c064c1
 //	[4] https://medium.com/@yulang.chu/go-stack-or-heap-2-slices-which-keep-in-stack-have-limitation-of-size-b3f3adfd6190
-var (
-	initialValueStackSize     = 64
-	initialCallFrameStackSize = 16
-)
+var initialValueStackSize = 64
 
 func (e *moduleEngine) newCallEngine(source *wasm.FunctionInstance, compiled *function) *callEngine {
 	ce := &callEngine{
-		valueStack:     make([]uint64, initialValueStackSize),
-		callFrameStack: make([]callFrame, initialCallFrameStackSize),
-		archContext:    newArchContext(),
-		source:         source,
-		compiled:       compiled,
+		valueStack:  make([]uint64, initialValueStackSize),
+		archContext: newArchContext(),
+		source:      source,
+		compiled:    compiled,
 	}
 
 	valueStackHeader := (*reflect.SliceHeader)(unsafe.Pointer(&ce.valueStack))
-	callFrameStackHeader := (*reflect.SliceHeader)(unsafe.Pointer(&ce.callFrameStack))
 	ce.globalContext = globalContext{
-		valueStackElement0Address:        valueStackHeader.Data,
-		valueStackLenInBytes:             uint64(valueStackHeader.Len) << 3,
-		callFrameStackElementZeroAddress: callFrameStackHeader.Data,
-		callFrameStackLen:                uint64(callFrameStackHeader.Len),
-		callFrameStackPointer:            0,
+		valueStackElement0Address: valueStackHeader.Data,
+		valueStackLenInBytes:      uint64(valueStackHeader.Len) << 3,
 	}
 	return ce
 }
@@ -675,13 +650,10 @@ func (ce *callEngine) pushValue(v uint64) {
 	ce.valueStackContext.stackPointer++
 }
 
-func (ce *callEngine) callFrameTop() *callFrame {
-	return &ce.callFrameStack[ce.globalContext.callFrameStackPointer-1]
-}
-
-func (ce *callEngine) callFrameAt(depth uint64) *callFrame {
-	idx := ce.globalContext.callFrameStackPointer - 1 - depth
-	return &ce.callFrameStack[idx]
+func (ce *callEngine) callFramePop() *callFrame {
+	idx := ce.valueStackTopIndex()
+	ce.valueStackContext.stackPointer -= 4
+	return (*callFrame)(unsafe.Pointer(&ce.valueStack[idx-1-4]))
 }
 
 func (ce *callEngine) valueStackTopIndex() uint64 {
@@ -698,61 +670,54 @@ const (
 )
 
 func (ce *callEngine) execWasmFunction(ctx context.Context, callCtx *wasm.CallContext) {
-	// Push the initial callframe.
-	ce.callFrameStack[0] = callFrame{returnAddress: ce.compiled.codeInitialAddress, function: ce.compiled}
-	ce.globalContext.callFrameStackPointer++
+	codeAddr := ce.compiled.codeInitialAddress
+	modAddr := ce.compiled.moduleInstanceAddress
 
 entry:
 	{
-		frame := ce.callFrameTop()
-		if buildoptions.IsDebugMode {
-			fmt.Printf("callframe=%s, stackBasePointer: %d, stackPointer: %d\n",
-				frame.String(), ce.valueStackContext.stackBasePointerInBytes>>3, ce.valueStackContext.stackPointer)
-		}
-
 		// Call into the native code.
-		nativecall(frame.returnAddress, uintptr(unsafe.Pointer(ce)), frame.function.moduleInstanceAddress)
+		nativecall(codeAddr, uintptr(unsafe.Pointer(ce)), modAddr)
 
 		// Check the status code from Compiler code.
 		switch status := ce.exitContext.statusCode; status {
 		case nativeCallStatusCodeReturned:
 			// Meaning that all the function frames above the previous call frame stack pointer are executed.
 		case nativeCallStatusCodeCallHostFunction:
-			calleeHostFunction := ce.callFrameTop().function
+			var calleeHostFunction *function = nil // TODO: get from the index.
 			// Not "callFrameTop" but take the below of peek with "callFrameAt(1)" as the top frame is for host function,
 			// but when making host function calls, we need to pass the memory instance of host function caller.
-			callerFunction := ce.callFrameAt(1).function
+			frame := ce.callFramePop()
 			params := wasm.PopGoFuncParams(calleeHostFunction.source, ce.popValue)
 			results := wasm.CallGoFunc(
 				ctx,
 				// Use the caller's memory, which might be different from the defining module on an imported function.
-				callCtx.WithMemory(callerFunction.source.Module.Memory),
+				callCtx.WithMemory(frame.function.source.Module.Memory),
 				calleeHostFunction.source,
 				params,
 			)
 			for _, v := range results {
 				ce.pushValue(v)
 			}
+			codeAddr, modAddr = frame.returnAddress, frame.function.moduleInstanceAddress
 			goto entry
 		case nativeCallStatusCodeCallBuiltInFunction:
+			frame := ce.callFramePop()
+			frameF := frame.function
 			switch ce.exitContext.builtinFunctionCallIndex {
 			case builtinFunctionIndexMemoryGrow:
-				callerFunction := ce.callFrameTop().function
-				ce.builtinFunctionMemoryGrow(ctx, callerFunction.source.Module.Memory)
+				ce.builtinFunctionMemoryGrow(ctx, frameF.source.Module.Memory)
 			case builtinFunctionIndexGrowValueStack:
-				callerFunction := ce.callFrameTop().function
-				ce.builtinFunctionGrowValueStack(callerFunction.stackPointerCeil)
-			case builtinFunctionIndexGrowCallFrameStack:
-				ce.builtinFunctionGrowCallFrameStack()
+				ce.builtinFunctionGrowValueStack(frameF.stackPointerCeil)
 			case builtinFunctionIndexTableGrow:
-				caller := ce.callFrameTop().function
-				ce.builtinFunctionTableGrow(ctx, caller.source.Module.Tables)
+				ce.builtinFunctionTableGrow(ctx, frameF.source.Module.Tables)
 			}
 			if buildoptions.IsDebugMode {
 				if ce.exitContext.builtinFunctionCallIndex == builtinFunctionIndexBreakPoint {
 					runtime.Breakpoint()
 				}
 			}
+
+			codeAddr, modAddr = frame.returnAddress, frameF.moduleInstanceAddress
 			goto entry
 		default:
 			status.causePanic()
@@ -760,9 +725,16 @@ entry:
 	}
 }
 
+var callStackCeiling = uint64(buildoptions.CallStackCeiling)
+
 func (ce *callEngine) builtinFunctionGrowValueStack(stackPointerCeil uint64) {
+	oldLen := uint64(len(ce.valueStack))
+	if callStackCeiling < oldLen {
+		panic(wasmruntime.ErrRuntimeCallStackOverflow)
+	}
+
 	// Extends the valueStack's length to currentLen*2+stackPointerCeil.
-	newLen := uint64(len(ce.valueStack))<<1 + (stackPointerCeil)
+	newLen := oldLen<<1 + (stackPointerCeil)
 	newStack := make([]uint64, newLen)
 	ce.valueStackTopIndex()
 	top := ce.valueStackTopIndex()
@@ -771,25 +743,6 @@ func (ce *callEngine) builtinFunctionGrowValueStack(stackPointerCeil uint64) {
 	valueStackHeader := (*reflect.SliceHeader)(unsafe.Pointer(&ce.valueStack))
 	ce.globalContext.valueStackElement0Address = valueStackHeader.Data
 	ce.globalContext.valueStackLenInBytes = newLen << 3
-}
-
-var callStackCeiling = uint64(buildoptions.CallStackCeiling)
-
-func (ce *callEngine) builtinFunctionGrowCallFrameStack() {
-	if callStackCeiling < uint64(len(ce.callFrameStack)+1) {
-		panic(wasmruntime.ErrRuntimeCallStackOverflow)
-	}
-
-	// Double the callstack slice length.
-	newLen := uint64(ce.globalContext.callFrameStackLen) * 2
-	newStack := make([]callFrame, newLen)
-	copy(newStack, ce.callFrameStack)
-	ce.callFrameStack = newStack
-
-	// Update the globalContext's fields as they become stale after the update ^^.
-	stackSliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&newStack))
-	ce.globalContext.callFrameStackLen = uint64(stackSliceHeader.Len)
-	ce.globalContext.callFrameStackElementZeroAddress = stackSliceHeader.Data
 }
 
 func (ce *callEngine) builtinFunctionMemoryGrow(ctx context.Context, mem *wasm.MemoryInstance) {
