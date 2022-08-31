@@ -147,19 +147,17 @@ type (
 	}
 
 	// callFrame holds the information to which the caller function can return.
-	// callFrame is created for currently executed function frame as well,
-	// so some fields are not yet set when native code is currently executing it.
-	// That is, callFrameTop().returnAddress or returnStackBasePointerInBytes are not set
-	// until it makes a function call.
 	callFrame struct {
-		// Set when making function call from this function frame, or for the initial function frame to call from
-		// callEngine.execWasmFunction.
+		// returnAddress is the return address to which the engine jump when the callee function returns.
 		returnAddress uintptr
-		// Set when making function call from this function frame.
+		// returnStackBasePointerInBytes is the stack base pointer to set on valueStackContext.stackBasePointerInBytes
+		// when the callee function returns.
 		returnStackBasePointerInBytes uint64
-		// Set when making function call to this function frame.
+		// function is the caller *function, and is used to retrieve the stack trace.
+		// Note: should be possible to revive *function from returnAddress, but might be costly.
 		function *function
 		// _ is a necessary padding to make the size of callFrame struct a power of 2.
+		// TODO: do we really need this?
 		_ [8]byte
 	}
 

@@ -4521,37 +4521,37 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 
 	c.locationStack.markRegisterUsed(functionAddressRegister)
 
-	// Obtain the temporary registers to be used in the followings.
-	freeRegs, found := c.locationStack.takeFreeRegisters(registerTypeGeneralPurpose, 3)
+	// Obtain a temporary register to be used in the followings.
+	tmpRegister, found := c.locationStack.takeFreeRegister(registerTypeGeneralPurpose)
 	if !found {
 		// This in theory never happen as all the registers must be free except codeAddressRegister.
 		return fmt.Errorf("could not find enough free registers")
 	}
-	c.locationStack.markRegisterUsed(freeRegs...)
 
-	tmpRegister := freeRegs[0]
-
-	// The stack should look lile:
+	// The stack should look like:
 	//
 	// 	[argN, ..., arg0, .returnAddress, .returnStackBasePointerInBytes, .function, ....
-	//                                                                    ^
-	//                                                             callEngine.
-	returnAddressLoc := c.locationStack.pushRuntimeValueLocationOnStack()
-	returnStackBasePointerInBytesLoc := c.locationStack.pushRuntimeValueLocationOnStack()
-	//returnFunctionPointerLoc := c.locationStack.pushRuntimeValueLocationOnStack()
+	//                    |                                                        |
+	//          callFrame{^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^}
+	//
+	// where callFrame is used to return to this currently executed function.
 
-	// 1) Set rb.1 so that we can return back to this function properly.
+	callFrameReturnAddressLoc := c.locationStack.pushRuntimeValueLocationOnStack()
+	callFrameStackBasePointerInBytesLoc := c.locationStack.pushRuntimeValueLocationOnStack()
+	callFrameFunctionLoc := c.locationStack.pushRuntimeValueLocationOnStack()
+
+	// Save the current stack base pointer at callFrameStackBasePointerInBytesLoc.
 	{
 		// We must save the current stack base pointer (which lives on callEngine.valueStackContext.stackPointer)
 		// to the call frame stack. In the example, this is equivalent to writing the value into "rb.1".
 		c.assembler.CompileMemoryToRegister(amd64.MOVQ,
 			amd64ReservedRegisterForCallEngine, callEngineValueStackContextStackBasePointerInBytesOffset,
 			tmpRegister)
-		returnStackBasePointerInBytesLoc.setRegister(tmpRegister)
-		c.compileReleaseRegisterToStack(returnStackBasePointerInBytesLoc)
+		callFrameStackBasePointerInBytesLoc.setRegister(tmpRegister)
+		c.compileReleaseRegisterToStack(callFrameStackBasePointerInBytesLoc)
 	}
 
-	// 2) Set callEngine.valueStackContext.stackBasePointer for the next function.
+	// Set callEngine.valueStackContext.stackBasePointer for the next function.
 	if offset := int64(c.locationStack.sp) - int64(functype.ParamNumInUint64); offset > 0 {
 		// At this point, tmpRegister holds the old stack base pointer. We could get the new frame's
 		// stack base pointer by "old stack base pointer + old stack pointer - # of function params"
@@ -4564,13 +4564,21 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 		panic("BUG: offset should be non zero")
 	}
 
-	// 4) Set ra.1 so that we can return to this function properly.
-	//
-	// We have to set the return address for the current call frame (which is "ra.1" in the example).
-	// First, Get the return address into the tmpRegister.
+	// Write the currently executed *function (placed at callEngine.moduleContext.fn) into callFrameFunctionLoc.
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		amd64ReservedRegisterForCallEngine, callEngineModuleContextFnOffset,
+		tmpRegister)
+	callFrameFunctionLoc.setRegister(tmpRegister)
+	c.compileReleaseRegisterToStack(callFrameFunctionLoc)
+
+	// Set callEngine.moduleContext.fn to the next *function.
+	c.assembler.CompileRegisterToMemory(amd64.MOVQ, functionAddressRegister,
+		amd64ReservedRegisterForCallEngine, callEngineModuleContextFnOffset)
+
+	// Write the return address into callFrameReturnAddressLoc.
 	c.assembler.CompileReadInstructionAddress(tmpRegister, amd64.JMP)
-	returnAddressLoc.setRegister(tmpRegister)
-	c.compileReleaseRegisterToStack(returnAddressLoc)
+	callFrameReturnAddressLoc.setRegister(tmpRegister)
+	c.compileReleaseRegisterToStack(callFrameReturnAddressLoc)
 
 	if amd64CallingConventionModuleInstanceAddressRegister == functionAddressRegister {
 		// This case we must move the value on targetFunctionAddressRegister to another register, otherwise
@@ -4588,12 +4596,11 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 	c.assembler.CompileJumpToMemory(amd64.JMP, functionAddressRegister, functionCodeInitialAddressOffset)
 
 	// All the registers used are temporary, so we mark them unused.
-	c.locationStack.markRegisterUnused(functionAddressRegister)
-	c.locationStack.markRegisterUnused(freeRegs...)
+	c.locationStack.markRegisterUnused(tmpRegister, functionAddressRegister)
 
 	// On the function return, we have to initialize the state.
-	// This could be reached after returnFunction(), so callEngine.valueStackContext.stackBasePointer
-	// and callEngine.moduleContext.moduleInstanceAddress are changed (See comments in returnFunction()).
+	// This could be reached after callFrameFunctionLoc(), so callEngine.valueStackContext.stackBasePointer
+	// and callEngine.moduleContext.moduleInstanceAddress are changed (See comments in callFrameFunctionLoc()).
 	// Therefore we have to initialize the state according to these changes.
 	if err := c.compileModuleContextInitialization(); err != nil {
 		return err
