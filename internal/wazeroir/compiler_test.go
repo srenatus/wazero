@@ -129,7 +129,8 @@ func TestCompile(t *testing.T) {
 					ParamNumInUint64:  1,
 					ResultNumInUint64: 1,
 				},
-				TableTypes: []wasm.RefType{},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 1,
 			},
 		},
 		{
@@ -215,8 +216,9 @@ func TestCompile(t *testing.T) {
 					ParamNumInUint64:  1,
 					ResultNumInUint64: 1,
 				},
-				TableTypes: []wasm.RefType{},
-				UsesMemory: true,
+				TableTypes:             []wasm.RefType{},
+				UsesMemory:             true,
+				CallFrameIndexInUint64: 1,
 			},
 		},
 	}
@@ -413,11 +415,12 @@ func TestCompile_MultiValue(t *testing.T) {
 					&OperationDrop{Depth: &InclusiveRange{Start: 2, End: 3}}, // [$y, $x]
 					&OperationBr{Target: &BranchTarget{}},                    // return!
 				},
-				LabelCallers: map[string]uint32{},
-				Signature:    i32i32_i32i32,
-				Functions:    []wasm.Index{0},
-				Types:        []*wasm.FunctionType{i32i32_i32i32},
-				TableTypes:   []wasm.RefType{},
+				LabelCallers:           map[string]uint32{},
+				Signature:              i32i32_i32i32,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{i32i32_i32i32},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 2,
 			},
 		},
 		{
@@ -458,11 +461,12 @@ func TestCompile_MultiValue(t *testing.T) {
 				},
 				// Note: f64.add comes after br 0 so is unreachable. This is why neither the add, nor its other operand
 				// are in the above compilation result.
-				LabelCallers: map[string]uint32{".L2_cont": 1}, // arbitrary label
-				Signature:    v_f64f64,
-				Functions:    []wasm.Index{0},
-				Types:        []*wasm.FunctionType{v_f64f64},
-				TableTypes:   []wasm.RefType{},
+				LabelCallers:           map[string]uint32{".L2_cont": 1}, // arbitrary label
+				Signature:              v_f64f64,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{v_f64f64},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 2,
 			},
 		},
 		{
@@ -481,11 +485,12 @@ func TestCompile_MultiValue(t *testing.T) {
 					&OperationConstI64{Value: 356},        // [306, 356]
 					&OperationBr{Target: &BranchTarget{}}, // return!
 				},
-				LabelCallers: map[string]uint32{},
-				Signature:    _i32i64,
-				Functions:    []wasm.Index{0},
-				Types:        []*wasm.FunctionType{_i32i64},
-				TableTypes:   []wasm.RefType{},
+				LabelCallers:           map[string]uint32{},
+				Signature:              _i32i64,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{_i32i64},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 2,
 			},
 		},
 		{
@@ -535,10 +540,11 @@ func TestCompile_MultiValue(t *testing.T) {
 					".L2_cont": 2,
 					".L2_else": 1,
 				},
-				Signature:  i32_i32,
-				Functions:  []wasm.Index{0},
-				Types:      []*wasm.FunctionType{i32_i32},
-				TableTypes: []wasm.RefType{},
+				Signature:              i32_i32,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{i32_i32},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 1,
 			},
 		},
 		{
@@ -592,10 +598,11 @@ func TestCompile_MultiValue(t *testing.T) {
 					".L2_cont": 2,
 					".L2_else": 1,
 				},
-				Signature:  i32_i32,
-				Functions:  []wasm.Index{0},
-				Types:      []*wasm.FunctionType{i32_i32, i32i32_i32},
-				TableTypes: []wasm.RefType{},
+				Signature:              i32_i32,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{i32_i32, i32i32_i32},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 1,
 			},
 		},
 		{
@@ -649,10 +656,11 @@ func TestCompile_MultiValue(t *testing.T) {
 					".L2_cont": 2,
 					".L2_else": 1,
 				},
-				Signature:  i32_i32,
-				Functions:  []wasm.Index{0},
-				Types:      []*wasm.FunctionType{i32_i32, i32i32_i32},
-				TableTypes: []wasm.RefType{},
+				Signature:              i32_i32,
+				Functions:              []wasm.Index{0},
+				Types:                  []*wasm.FunctionType{i32_i32, i32i32_i32},
+				TableTypes:             []wasm.RefType{},
+				CallFrameIndexInUint64: 1,
 			},
 		},
 	}
@@ -697,11 +705,12 @@ func TestCompile_NonTrappingFloatToIntConversion(t *testing.T) {
 			&OperationDrop{Depth: &InclusiveRange{Start: 1, End: 1}}, // [i32.trunc_sat_f32_s($0)]
 			&OperationBr{Target: &BranchTarget{}},                    // return!
 		},
-		LabelCallers: map[string]uint32{},
-		Signature:    f32_i32,
-		Functions:    []wasm.Index{0},
-		Types:        []*wasm.FunctionType{f32_i32},
-		TableTypes:   []wasm.RefType{},
+		LabelCallers:           map[string]uint32{},
+		Signature:              f32_i32,
+		Functions:              []wasm.Index{0},
+		Types:                  []*wasm.FunctionType{f32_i32},
+		TableTypes:             []wasm.RefType{},
+		CallFrameIndexInUint64: 1,
 	}
 	for _, tp := range module.TypeSection {
 		tp.CacheNumInUint64()
@@ -728,11 +737,12 @@ func TestCompile_SignExtensionOps(t *testing.T) {
 			&OperationDrop{Depth: &InclusiveRange{Start: 1, End: 1}}, // [i32.extend8_s($0)]
 			&OperationBr{Target: &BranchTarget{}},                    // return!
 		},
-		LabelCallers: map[string]uint32{},
-		Signature:    i32_i32,
-		Functions:    []wasm.Index{0},
-		Types:        []*wasm.FunctionType{i32_i32},
-		TableTypes:   []wasm.RefType{},
+		LabelCallers:           map[string]uint32{},
+		Signature:              i32_i32,
+		Functions:              []wasm.Index{0},
+		Types:                  []*wasm.FunctionType{i32_i32},
+		TableTypes:             []wasm.RefType{},
+		CallFrameIndexInUint64: 1,
 	}
 	for _, tp := range module.TypeSection {
 		tp.CacheNumInUint64()
@@ -2769,7 +2779,7 @@ func TestCompiler_calcLocalIndexToStackHeight(t *testing.T) {
 		functionLocalTypes                 []wasm.ValueType
 		callFrameStackSizeInUint64         int
 		expLocalIndexToStackHeightInUint64 map[uint32]int
-		expCallFrameIndexInUint64          int
+		expCallFrameIndexInUint64          uint64
 	}{
 		{
 			name: "no function local, args>results",
