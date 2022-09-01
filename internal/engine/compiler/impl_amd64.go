@@ -4682,7 +4682,43 @@ func (c *amd64Compiler) compileReturnFunction() error {
 }
 
 func (c *amd64Compiler) compileCallHostFunction() error {
-	return c.compileCallGoFunction(nativeCallStatusCodeCallHostFunction)
+	// Host function needs the caller's memory instance,
+	// so we push the address (== *wasm.MemoryInstance) onto the stack.
+
+	// First, we load the caller's *function stored at the call frame into a register.
+	_, _, callerFunctionLoc := c.getCallFrameLocations()
+	reg, err := c.allocateRegister(registerTypeGeneralPurpose)
+	if err != nil {
+		return err
+	}
+	callerFunctionLoc.setRegister(reg)
+	c.compileLoadValueOnStackToRegister(callerFunctionLoc)
+	// Now loaded into the register, and revert the register assignment to callerFunctionLoc.
+	// Otherwise, the original *function on the memory stack will end up overridden during
+	// compileReleaseAllRegistersToStack in compileCallGoFunction.
+	callerFunctionLoc.setRegister(asm.NilRegister)
+
+	// At this point, reg holds *function.
+
+	// reg = function.moduleInstanceAddress (*wasm.ModuleInstance)
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ, reg,
+		functionModuleInstanceAddressOffset, reg)
+
+	// reg = asm.ModuleInstance.Memory (*wasm.MemoryInstance)
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ, reg,
+		moduleInstanceMemoryOffset, reg)
+
+	// Now ready to push the *wasm.MemoryInstance onto the stack.
+	c.pushRuntimeValueLocationOnRegister(reg, runtimeValueTypeI64)
+
+	// Call GoFunction.
+	if err := c.compileCallGoFunction(nativeCallStatusCodeCallHostFunction); err != nil {
+		return err
+	}
+
+	// On the return, we consumed the memory instance address ^.
+	_ = c.locationStack.pop()
+	return nil
 }
 
 func (c *amd64Compiler) compileCallBuiltinFunction(index wasm.Index) error {
@@ -4692,49 +4728,29 @@ func (c *amd64Compiler) compileCallBuiltinFunction(index wasm.Index) error {
 }
 
 func (c *amd64Compiler) compileCallGoFunction(compilerStatus nativeCallStatusCode) error {
-	//TODO
-	//// Release all the registers as our calling convention requires the caller-save.
-	//if err := c.compileReleaseAllRegistersToStack(); err != nil {
-	//	return err
-	//}
-	//
-	//// Obtain the temporary registers to be used in the followings.
-	//regs, found := c.locationStack.takeFreeRegisters(registerTypeGeneralPurpose, 3)
-	//if !found {
-	//	// This in theory never happen as all the registers must be free except indexReg.
-	//	return fmt.Errorf("could not find enough free registers")
-	//}
-	//c.locationStack.markRegisterUsed(regs...)
-	//
-	//// Alias these free tmp registers for readability.
-	//instructionAddressRegister, currentCallFrameAddressRegister, tmpRegister := regs[0], regs[1], regs[2]
-	//
-	//// We need to store the address of the current callFrame's return address.
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackPointerOffset, currentCallFrameAddressRegister)
-	//
-	//// next we shift the stack pointer so we get the actual offset from the address of stack's initial item.
-	//c.assembler.CompileConstToRegister(amd64.SHLQ, int64(callFrameDataSizeMostSignificantSetBit), currentCallFrameAddressRegister)
-	//
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackElement0AddressOffset, tmpRegister)
-	//
-	//// Now we can get the current call frame's address, which is equivalent to get &callEngine.callFrameStack[callEngine.callStackFramePointer-1].returnAddress.
-	//c.assembler.CompileMemoryWithIndexToRegister(
-	//	amd64.LEAQ,
-	//	tmpRegister, -(callFrameDataSize - callFrameReturnAddressOffset), currentCallFrameAddressRegister, 1,
-	//	currentCallFrameAddressRegister,
-	//)
-	//
-	//c.assembler.CompileReadInstructionAddress(instructionAddressRegister, amd64.RET)
-	//
-	//// We are ready to store the return address (in instructionAddressRegister) to callEngine.callFrameStack[callEngine.callStackFramePointer-1].
-	//c.assembler.CompileRegisterToMemory(amd64.MOVQ, instructionAddressRegister, currentCallFrameAddressRegister, callFrameReturnAddressOffset)
-	//
-	//c.compileExitFromNativeCode(compilerStatus)
-	//
-	//// They were temporarily used, so we mark them unused.
-	//c.locationStack.markRegisterUnused(regs...)
+	// Read the return address, and push it onto the stack.
+	returnAddressReg, err := c.allocateRegister(registerTypeGeneralPurpose)
+	if err != nil {
+		return err
+	}
+	c.assembler.CompileReadInstructionAddress(returnAddressReg, amd64.RET)
+	c.pushRuntimeValueLocationOnRegister(returnAddressReg, runtimeValueTypeI64)
+
+	// Release all the registers as our calling convention requires the caller-save.
+	if err := c.compileReleaseAllRegistersToStack(); err != nil {
+		return err
+	}
+
+	// Obtain a temporary registers to save the return address.
+	returnAddressReg, found := c.locationStack.takeFreeRegister(registerTypeGeneralPurpose)
+	if !found {
+		panic("could not find enough free registers")
+	}
+
+	c.compileExitFromNativeCode(compilerStatus)
+
+	// On the return, we consumed the return address ^.
+	_ = c.locationStack.pop()
 	return nil
 }
 

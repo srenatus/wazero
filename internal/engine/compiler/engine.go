@@ -121,10 +121,6 @@ type (
 		// functions are compiled, so they access the stack via [stackBasePointer](fixed for entire function) + [stackPointer].
 		// More precisely, stackBasePointer is set to [callee's stack pointer] + [callee's stack base pointer] - [caller's params].
 		// This way, compiled functions can be independent of the timing of functions calls made against them.
-		//
-		// Note: This is saved on callFrameTop().returnStackBasePointer whenever making function call.
-		// Also, this is changed whenever we make function call or return from functions where we execute jump instruction.
-		// In either case, the caller of "jmp" instruction must set this field properly.
 		stackBasePointerInBytes uint64
 
 		// valueStackElement0Address is &engine.valueStack[0] as uintptr.
@@ -650,12 +646,6 @@ func (ce *callEngine) pushValue(v uint64) {
 	ce.valueStackContext.stackPointer++
 }
 
-func (ce *callEngine) callFramePop() *callFrame {
-	idx := ce.valueStackTopIndex()
-	ce.valueStackContext.stackPointer -= 4
-	return (*callFrame)(unsafe.Pointer(&ce.valueStack[idx-1-4]))
-}
-
 func (ce *callEngine) valueStackTopIndex() uint64 {
 	return ce.valueStackContext.stackPointer + (ce.valueStackContext.stackBasePointerInBytes >> 3)
 }
@@ -668,6 +658,16 @@ const (
 	// builtinFunctionIndexBreakPoint is internal (only for wazero developers). Disabled by default.
 	builtinFunctionIndexBreakPoint
 )
+
+func memoryInstanceFromUintptr(ptr uintptr) *wasm.MemoryInstance {
+	// Wraps ptrs as the double pointer in order to avoid the unsafe access as detected by race detector.
+	//
+	// For example, if we have (*wasm.MemoryInstance)(unsafe.Pointer(ptr)) instead, then the race detector's "checkptr"
+	// subroutine wanrs as "checkptr: pointer arithmetic result points to invalid allocation"
+	// https://github.com/golang/go/blob/1ce7fcf139417d618c2730010ede2afb41664211/src/runtime/checkptr.go#L69
+	var wrapped *uintptr = &ptr
+	return *(**wasm.MemoryInstance)(unsafe.Pointer(wrapped))
+}
 
 func (ce *callEngine) execWasmFunction(ctx context.Context, callCtx *wasm.CallContext) {
 	codeAddr := ce.initialFn.codeInitialAddress
@@ -683,31 +683,32 @@ entry:
 		case nativeCallStatusCodeReturned:
 			// Meaning that all the function frames above the previous call frame stack pointer are executed.
 		case nativeCallStatusCodeCallHostFunction:
-			var calleeHostFunction *function = nil // TODO: get the pointer from the stack.
-			frame := ce.callFramePop()
+			returnAddress := ce.popValue()
+			memoryInstance := memoryInstanceFromUintptr(uintptr(ce.popValue()))
+			calleeHostFunction := ce.moduleContext.fn
 			params := wasm.PopGoFuncParams(calleeHostFunction.source, ce.popValue)
 			results := wasm.CallGoFunc(
 				ctx,
 				// Use the caller's memory, which might be different from the defining module on an imported function.
-				callCtx.WithMemory(frame.function.source.Module.Memory),
+				callCtx.WithMemory(memoryInstance),
 				calleeHostFunction.source,
 				params,
 			)
 			for _, v := range results {
 				ce.pushValue(v)
 			}
-			codeAddr, modAddr = frame.returnAddress, frame.function.moduleInstanceAddress
+			codeAddr, modAddr = uintptr(returnAddress), ce.moduleInstanceAddress
 			goto entry
 		case nativeCallStatusCodeCallBuiltInFunction:
-			frame := ce.callFramePop()
-			frameF := frame.function
+			returnAddress := ce.popValue()
+			caller := ce.moduleContext.fn
 			switch ce.exitContext.builtinFunctionCallIndex {
 			case builtinFunctionIndexMemoryGrow:
-				ce.builtinFunctionMemoryGrow(ctx, frameF.source.Module.Memory)
+				ce.builtinFunctionMemoryGrow(ctx, caller.source.Module.Memory)
 			case builtinFunctionIndexGrowValueStack:
-				ce.builtinFunctionGrowValueStack(frameF.stackPointerCeil)
+				ce.builtinFunctionGrowValueStack(caller.stackPointerCeil)
 			case builtinFunctionIndexTableGrow:
-				ce.builtinFunctionTableGrow(ctx, frameF.source.Module.Tables)
+				ce.builtinFunctionTableGrow(ctx, caller.source.Module.Tables)
 			}
 			if buildoptions.IsDebugMode {
 				if ce.exitContext.builtinFunctionCallIndex == builtinFunctionIndexBreakPoint {
@@ -715,7 +716,7 @@ entry:
 				}
 			}
 
-			codeAddr, modAddr = frame.returnAddress, frameF.moduleInstanceAddress
+			codeAddr, modAddr = uintptr(returnAddress), ce.moduleInstanceAddress
 			goto entry
 		default:
 			status.causePanic()
