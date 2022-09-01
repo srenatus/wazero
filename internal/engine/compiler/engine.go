@@ -681,12 +681,12 @@ entry:
 		// Check the status code from Compiler code.
 		switch status := ce.exitContext.statusCode; status {
 		case nativeCallStatusCodeReturned:
-			// Meaning that all the function frames above the previous call frame stack pointer are executed.
 		case nativeCallStatusCodeCallHostFunction:
 			returnAddress := ce.popValue()
 			memoryInstance := memoryInstanceFromUintptr(uintptr(ce.popValue()))
 			calleeHostFunction := ce.moduleContext.fn
-			params := wasm.PopGoFuncParams(calleeHostFunction.source, ce.popValue)
+			base := int(ce.stackBasePointerInBytes >> 3)
+			params := ce.valueStack[base : base+len(calleeHostFunction.source.Type.Params)]
 			results := wasm.CallGoFunc(
 				ctx,
 				// Use the caller's memory, which might be different from the defining module on an imported function.
@@ -694,9 +694,7 @@ entry:
 				calleeHostFunction.source,
 				params,
 			)
-			for _, v := range results {
-				ce.pushValue(v)
-			}
+			copy(ce.valueStack[base:], results)
 			codeAddr, modAddr = uintptr(returnAddress), ce.moduleInstanceAddress
 			goto entry
 		case nativeCallStatusCodeCallBuiltInFunction:
