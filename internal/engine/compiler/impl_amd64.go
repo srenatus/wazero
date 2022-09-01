@@ -4557,6 +4557,8 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 	//
 	// where callFrame is used to return to this currently executed function.
 
+	nextStackBasePointerOffset := int64(c.locationStack.sp) - int64(functype.ParamNumInUint64)
+
 	// TODO: Take the reserved space for results into account.
 
 	callFrameReturnAddressLoc := c.locationStack.pushRuntimeValueLocationOnStack()
@@ -4575,11 +4577,11 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 	}
 
 	// Set callEngine.valueStackContext.stackBasePointer for the next function.
-	if offset := int64(c.locationStack.sp) - int64(functype.ParamNumInUint64); offset > 0 {
+	if nextStackBasePointerOffset > 0 {
 		// At this point, tmpRegister holds the old stack base pointer. We could get the new frame's
 		// stack base pointer by "old stack base pointer + old stack pointer - # of function params"
 		// See the comments in callEngine.pushCallFrame which does exactly the same calculation in Go.
-		c.assembler.CompileConstToRegister(amd64.ADDQ, offset<<3, tmpRegister)
+		c.assembler.CompileConstToRegister(amd64.ADDQ, nextStackBasePointerOffset<<3, tmpRegister)
 
 		// Write the calculated value to callEngine.valueStackContext.stackBasePointer.
 		c.assembler.CompileRegisterToMemory(amd64.MOVQ, tmpRegister, amd64ReservedRegisterForCallEngine, callEngineValueStackContextStackBasePointerInBytesOffset)
