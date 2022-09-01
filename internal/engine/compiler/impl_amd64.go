@@ -735,35 +735,6 @@ func (c *amd64Compiler) compileCall(o *wazeroir.OperationCall) error {
 	if err := c.compileCallFunctionImpl(targetAddressRegister, targetType); err != nil {
 		return err
 	}
-
-	// We consumed the function parameters from the stack after call.
-	for i := 0; i < targetType.ParamNumInUint64; i++ {
-		c.locationStack.pop()
-	}
-
-	// Pop the call frame stack.
-	for i := 0; i < callFrameDataSizeInUint64; i++ {
-		c.locationStack.pop()
-	}
-
-	// Now the function results are pushed by the call.
-	for _, t := range targetType.Results {
-		loc := c.locationStack.pushRuntimeValueLocationOnStack()
-		switch t {
-		case wasm.ValueTypeI32:
-			loc.valueType = runtimeValueTypeI32
-		case wasm.ValueTypeI64, wasm.ValueTypeFuncref, wasm.ValueTypeExternref:
-			loc.valueType = runtimeValueTypeI64
-		case wasm.ValueTypeF32:
-			loc.valueType = runtimeValueTypeF32
-		case wasm.ValueTypeF64:
-			loc.valueType = runtimeValueTypeF64
-		case wasm.ValueTypeV128:
-			loc.valueType = runtimeValueTypeV128Lo
-			hi := c.locationStack.pushRuntimeValueLocationOnStack()
-			hi.valueType = runtimeValueTypeV128Hi
-		}
-	}
 	return nil
 }
 
@@ -851,35 +822,6 @@ func (c *amd64Compiler) compileCallIndirect(o *wazeroir.OperationCallIndirect) e
 
 	// The offset register should be marked as un-used as we consumed in the function call.
 	c.locationStack.markRegisterUnused(offset.register, tmp, tmp2)
-
-	// We consumed the function parameters from the stack after call.
-	for i := 0; i < targetFunctionType.ParamNumInUint64; i++ {
-		c.locationStack.pop()
-	}
-
-	// Pop the call frame stack.
-	for i := 0; i < callFrameDataSizeInUint64; i++ {
-		c.locationStack.pop()
-	}
-
-	// Also, the function results were pushed by the call.
-	for _, t := range targetFunctionType.Results {
-		loc := c.locationStack.pushRuntimeValueLocationOnStack()
-		switch t {
-		case wasm.ValueTypeI32:
-			loc.valueType = runtimeValueTypeI32
-		case wasm.ValueTypeI64, wasm.ValueTypeFuncref, wasm.ValueTypeExternref:
-			loc.valueType = runtimeValueTypeI64
-		case wasm.ValueTypeF32:
-			loc.valueType = runtimeValueTypeF32
-		case wasm.ValueTypeF64:
-			loc.valueType = runtimeValueTypeF64
-		case wasm.ValueTypeV128:
-			loc.valueType = runtimeValueTypeV128Lo
-			hi := c.locationStack.pushRuntimeValueLocationOnStack()
-			hi.valueType = runtimeValueTypeV128Hi
-		}
-	}
 	return nil
 }
 
@@ -4530,6 +4472,25 @@ func (c *amd64Compiler) allocateRegister(t registerType) (reg asm.Register, err 
 	return
 }
 
+func (c *amd64Compiler) pushCallFrameOnCall(callTargetFunctionType *wasm.FunctionType) (
+	returnAddress, callerStackBasePointerInBytes, callerFunction *runtimeValueLocation,
+) {
+	reservedSlotsBeforeCallFrame := callTargetFunctionType.ResultNumInUint64 - callTargetFunctionType.ParamNumInUint64
+	for i := 0; i < reservedSlotsBeforeCallFrame; i++ {
+		c.locationStack.pushRuntimeValueLocationOnStack()
+	}
+
+	// callFrame.returnAddress
+	returnAddress = c.locationStack.pushRuntimeValueLocationOnStack()
+	// callFrame.returnStackBasePointerInBytes
+	callerStackBasePointerInBytes = c.locationStack.pushRuntimeValueLocationOnStack()
+	// callFrame.function
+	callerFunction = c.locationStack.pushRuntimeValueLocationOnStack()
+	// callFrame._
+	_ = c.locationStack.pushRuntimeValueLocationOnStack()
+	return
+}
+
 // callFunction adds instructions to call a function whose address equals either addr parameter or the value on indexReg.
 //
 // Note: this is the counterpart for returnFunction, and see the comments there as well
@@ -4551,19 +4512,19 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 
 	// The stack should look like:
 	//
-	// 	[argN, ..., arg0, .returnAddress, .returnStackBasePointerInBytes, .function, ....
-	//                    |                                                        |
-	//          callFrame{^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^}
+	//               reserved slots for results (if len(results) > len(args))
+	//                      |     |
+	//    ,arg0, ..., argN, ..., _, .returnAddress, .returnStackBasePointerInBytes, .function, ....
+	//      |                       |                                                        |
+	//      |             callFrame{^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^}
+	//      |
+	// nextStackBasePointerOffset
 	//
 	// where callFrame is used to return to this currently executed function.
 
 	nextStackBasePointerOffset := int64(c.locationStack.sp) - int64(functype.ParamNumInUint64)
 
-	// TODO: Take the reserved space for results into account.
-
-	callFrameReturnAddressLoc := c.locationStack.pushRuntimeValueLocationOnStack()
-	callFrameStackBasePointerInBytesLoc := c.locationStack.pushRuntimeValueLocationOnStack()
-	callFrameFunctionLoc := c.locationStack.pushRuntimeValueLocationOnStack()
+	callFrameReturnAddressLoc, callFrameStackBasePointerInBytesLoc, callFrameFunctionLoc := c.pushCallFrameOnCall(functype)
 
 	// Save the current stack base pointer at callFrameStackBasePointerInBytesLoc.
 	{
@@ -4624,9 +4585,6 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 	c.locationStack.markRegisterUnused(tmpRegister, functionAddressRegister)
 
 	// On the function return, we have to initialize the state.
-	// This could be reached after callFrameFunctionLoc(), so callEngine.valueStackContext.stackBasePointer
-	// and callEngine.moduleContext.moduleInstanceAddress are changed (See comments in callFrameFunctionLoc()).
-	// Therefore we have to initialize the state according to these changes.
 	if err := c.compileModuleContextInitialization(); err != nil {
 		return err
 	}
@@ -4637,6 +4595,28 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 	// Due to the change to callEngine.moduleContext.moduleInstanceAddress as that might result in
 	// the memory instance manipulation.
 	c.compileReservedMemoryPointerInitialization()
+
+	// We consumed the function parameters, the call frame stack and reserved slots during the call.
+	c.locationStack.sp = uint64(nextStackBasePointerOffset)
+
+	// Now the function results are pushed by the call.
+	for _, t := range functype.Results {
+		loc := c.locationStack.pushRuntimeValueLocationOnStack()
+		switch t {
+		case wasm.ValueTypeI32:
+			loc.valueType = runtimeValueTypeI32
+		case wasm.ValueTypeI64, wasm.ValueTypeFuncref, wasm.ValueTypeExternref:
+			loc.valueType = runtimeValueTypeI64
+		case wasm.ValueTypeF32:
+			loc.valueType = runtimeValueTypeF32
+		case wasm.ValueTypeF64:
+			loc.valueType = runtimeValueTypeF64
+		case wasm.ValueTypeV128:
+			loc.valueType = runtimeValueTypeV128Lo
+			hi := c.locationStack.pushRuntimeValueLocationOnStack()
+			hi.valueType = runtimeValueTypeV128Hi
+		}
+	}
 	return nil
 }
 
