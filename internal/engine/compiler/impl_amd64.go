@@ -4645,7 +4645,7 @@ func (c *amd64Compiler) compileReturnFunction() error {
 	defer c.locationStack.markRegisterUnused(amd64CallingConventionDestinationFunctionModuleInstanceAddressRegister)
 
 	// Obtain a temporary register to be used in the following.
-	tmpRegister, found := c.locationStack.takeFreeRegister(registerTypeGeneralPurpose)
+	returnAddressRegister, found := c.locationStack.takeFreeRegister(registerTypeGeneralPurpose)
 	if !found {
 		panic("BUG: all the registers should be free at this point: " + c.locationStack.String())
 	}
@@ -4653,12 +4653,19 @@ func (c *amd64Compiler) compileReturnFunction() error {
 	returnAddress, callerStackBasePointerInBytes, callerFunction := c.getCallFrameLocations()
 
 	// If the return address is zero, meaning that we return from the execution.
-	c.assembler.CompileConstToMemory(amd64.TESTQ, 0, amd64ReservedRegisterForStackBasePointerAddress, int64(returnAddress.stackPointer)*8)
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		amd64ReservedRegisterForStackBasePointerAddress, int64(returnAddress.stackPointer)*8,
+		returnAddressRegister,
+	)
+	c.assembler.CompileConstToRegister(amd64.TESTQ, 0, returnAddressRegister)
 	jmpIfNotReturn := c.assembler.CompileJump(amd64.JNE)
 	c.compileExitFromNativeCode(nativeCallStatusCodeReturned)
 
 	// Otherwise, we return to the caller.
 	c.assembler.SetJumpTargetOnNext(jmpIfNotReturn)
+
+	// Alias for readability.
+	tmpRegister := amd64CallingConventionDestinationFunctionModuleInstanceAddressRegister
 
 	// First, restore the valueStackContext.stackBasePointerInBytesOffset from callerStackBasePointerInBytes.
 	callerStackBasePointerInBytes.setRegister(tmpRegister)
@@ -4677,7 +4684,7 @@ func (c *amd64Compiler) compileReturnFunction() error {
 		amd64CallingConventionDestinationFunctionModuleInstanceAddressRegister)
 
 	// Then, jump into the return address!
-	c.assembler.CompileJumpToMemory(amd64.JMP, amd64ReservedRegisterForStackBasePointerAddress, int64(returnAddress.stackPointer)*8)
+	c.assembler.CompileJumpToRegister(amd64.JMP, returnAddressRegister)
 	return nil
 }
 

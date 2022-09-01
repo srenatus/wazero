@@ -520,8 +520,10 @@ func (e *moduleEngine) NewCallEngine(callCtx *wasm.CallContext, f *wasm.Function
 
 // Call implements the same method as documented on wasm.ModuleEngine.
 func (ce *callEngine) Call(ctx context.Context, callCtx *wasm.CallContext, params ...uint64) (results []uint64, err error) {
+	tp := ce.source.Type
+
 	paramCount := len(params)
-	if ce.source.Type.ParamNumInUint64 != paramCount {
+	if tp.ParamNumInUint64 != paramCount {
 		return nil, fmt.Errorf("expected %d params, but passed %d", ce.source.Type.ParamNumInUint64, paramCount)
 	}
 
@@ -538,15 +540,48 @@ func (ce *callEngine) Call(ctx context.Context, callCtx *wasm.CallContext, param
 		}
 	}()
 
-	for _, v := range params {
+	ce.initializeStack(tp, params)
+	ce.execWasmFunction(ctx, callCtx)
+
+	results = ce.valueStack[:tp.ResultNumInUint64]
+	return
+}
+
+// initializeStack initializes callEngine.valueStack before entering native code.
+//
+// The stack must look like, if len(params) < len(results):
+//
+//   [arg0, arg1, ..., argN, 0, 0, 0, 0, ...
+//                          {          } ^
+//                           callFrame   |
+//                                       |
+//                                  stackPointer
+// else:
+//   [arg0, arg1, ..., argN, _, _, _,  0, 0, 0, 0, ...
+//                         |        | {          }  ^
+//                         |reserved|   callFrame   |
+//                         |        |               |
+//                         |-------->          stackPointer
+//                    len(results)-len(params)
+//
+// 	 where we reserve the slots below the callframe with the length len(results)-len(params).
+//
+// Note: callFrame {  } is zeroed to indicate that the initial "caller" is this callEngine, not the Wasm function.
+func (ce *callEngine) initializeStack(tp *wasm.FunctionType, args []uint64) {
+
+	for _, v := range args {
 		ce.pushValue(v)
 	}
 
-	// TODO: reserve the empty call frame!
+	diff := tp.ResultNumInUint64 - tp.ParamNumInUint64
+	if diff > 0 {
+		ce.stackPointer += uint64(diff)
+	}
 
-	ce.execWasmFunction(ctx, callCtx)
-	results = wasm.PopValues(ce.source.Type.ResultNumInUint64, ce.popValue)
-	return
+	for i := 0; i < callFrameDataSizeInUint64; i++ {
+		ce.valueStack[ce.stackPointer] = 0
+		ce.stackPointer++
+	}
 }
 
 // deferredOnCall takes the recovered value `recovered`, and wraps it
@@ -653,7 +688,6 @@ func (ce *callEngine) valueStackTopIndex() uint64 {
 const (
 	builtinFunctionIndexMemoryGrow wasm.Index = iota
 	builtinFunctionIndexGrowValueStack
-	builtinFunctionIndexGrowCallFrameStack
 	builtinFunctionIndexTableGrow
 	// builtinFunctionIndexBreakPoint is internal (only for wazero developers). Disabled by default.
 	builtinFunctionIndexBreakPoint
@@ -663,7 +697,7 @@ func memoryInstanceFromUintptr(ptr uintptr) *wasm.MemoryInstance {
 	// Wraps ptrs as the double pointer in order to avoid the unsafe access as detected by race detector.
 	//
 	// For example, if we have (*wasm.MemoryInstance)(unsafe.Pointer(ptr)) instead, then the race detector's "checkptr"
-	// subroutine wanrs as "checkptr: pointer arithmetic result points to invalid allocation"
+	// subroutine warns as "checkptr: pointer arithmetic result points to invalid allocation"
 	// https://github.com/golang/go/blob/1ce7fcf139417d618c2730010ede2afb41664211/src/runtime/checkptr.go#L69
 	var wrapped *uintptr = &ptr
 	return *(**wasm.MemoryInstance)(unsafe.Pointer(wrapped))

@@ -364,3 +364,116 @@ func (f *mockFunctionDefinition) ParamTypes() []wasm.ValueType {
 func (f *mockFunctionDefinition) ResultTypes() []wasm.ValueType {
 	return []wasm.ValueType{}
 }
+
+func TestCallEngine_initializeStack(t *testing.T) {
+	const i32 = wasm.ValueTypeI32
+	const stackSize = 10
+	const initialVal = ^uint64(0)
+	tests := []struct {
+		name            string
+		funcType        *wasm.FunctionType
+		args            []uint64
+		expStackPointer uint64
+		expStack        [stackSize]uint64
+	}{
+		{
+			name:            "no param/result",
+			funcType:        &wasm.FunctionType{},
+			expStackPointer: callFrameDataSizeInUint64,
+			expStack: [stackSize]uint64{
+				0, 0, 0, 0, // zeroed call frame
+				initialVal, initialVal, initialVal, initialVal, initialVal, initialVal,
+			},
+		},
+		{
+			name: "no result",
+			funcType: &wasm.FunctionType{
+				Params:           []wasm.ValueType{i32, i32},
+				ParamNumInUint64: 2,
+			},
+			args:            []uint64{0xdeadbeaf, 0xdeadbeaf},
+			expStackPointer: callFrameDataSizeInUint64 + 2,
+			expStack: [stackSize]uint64{
+				0xdeadbeaf, 0xdeadbeaf, // arguments
+				0, 0, 0, 0, // zeroed call frame
+				initialVal, initialVal, initialVal, initialVal,
+			},
+		},
+		{
+			name: "no param",
+			funcType: &wasm.FunctionType{
+				Results:           []wasm.ValueType{i32, i32, i32},
+				ResultNumInUint64: 3,
+			},
+			expStackPointer: callFrameDataSizeInUint64 + 3,
+			expStack: [stackSize]uint64{
+				initialVal, initialVal, initialVal, // reserved slots for results
+				0, 0, 0, 0, // zeroed call frame
+				initialVal, initialVal, initialVal,
+			},
+		},
+		{
+			name: "params > results",
+			funcType: &wasm.FunctionType{
+				Params:            []wasm.ValueType{i32, i32, i32, i32, i32},
+				ParamNumInUint64:  5,
+				Results:           []wasm.ValueType{i32, i32, i32},
+				ResultNumInUint64: 3,
+			},
+			args:            []uint64{0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf},
+			expStackPointer: callFrameDataSizeInUint64 + 5,
+			expStack: [stackSize]uint64{
+				0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf,
+				0, 0, 0, 0, // zeroed call frame
+				initialVal,
+			},
+		},
+		{
+			name: "params == results",
+			funcType: &wasm.FunctionType{
+				Params:            []wasm.ValueType{i32, i32, i32, i32, i32},
+				ParamNumInUint64:  5,
+				Results:           []wasm.ValueType{i32, i32, i32, i32, i32},
+				ResultNumInUint64: 5,
+			},
+			args:            []uint64{0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf},
+			expStackPointer: callFrameDataSizeInUint64 + 5,
+			expStack: [stackSize]uint64{
+				0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf,
+				0, 0, 0, 0, // zeroed call frame
+				initialVal,
+			},
+		},
+		{
+			name: "params < results",
+			funcType: &wasm.FunctionType{
+				Params:            []wasm.ValueType{i32, i32, i32},
+				ParamNumInUint64:  3,
+				Results:           []wasm.ValueType{i32, i32, i32, i32, i32},
+				ResultNumInUint64: 5,
+			},
+			args:            []uint64{0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf},
+			expStackPointer: callFrameDataSizeInUint64 + 5,
+			expStack: [stackSize]uint64{
+				0xdeafbeaf, 0xdeafbeaf, 0xdeafbeaf,
+				initialVal, initialVal, // reserved for results
+				0, 0, 0, 0, // zeroed call frame
+				initialVal,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			initialStack := make([]uint64, stackSize)
+			for i := range initialStack {
+				initialStack[i] = initialVal
+			}
+			ce := &callEngine{valueStack: initialStack}
+			ce.initializeStack(tc.funcType, tc.args)
+			require.Equal(t, tc.expStackPointer, ce.stackPointer)
+			require.Equal(t, tc.expStack[:], ce.valueStack)
+		})
+	}
+}
