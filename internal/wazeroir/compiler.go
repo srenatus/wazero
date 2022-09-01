@@ -118,9 +118,11 @@ func (c *compiler) calcLocalIndexToStackHeight() (callFrameIndexInUint64 uint64)
 		current++
 	}
 
-	// We reserve the stack slots for result values below the return call frame slots.
-	if diff := c.sig.ResultNumInUint64 - c.sig.ParamNumInUint64; diff > 0 {
-		current += diff
+	if c.callFrameStackSizeInUint64 > 0 {
+		// We reserve the stack slots for result values below the return call frame slots.
+		if diff := c.sig.ResultNumInUint64 - c.sig.ParamNumInUint64; diff > 0 {
+			current += diff
+		}
 	}
 
 	// Non-func param locals start after the return call frame.

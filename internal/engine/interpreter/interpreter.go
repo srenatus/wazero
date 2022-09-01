@@ -795,12 +795,6 @@ func (ce *callEngine) Call(ctx context.Context, m *wasm.CallContext, params ...u
 		ce.pushValue(param)
 	}
 
-	tp := ce.source.Type
-	diff := tp.ResultNumInUint64 - tp.ParamNumInUint64
-	for i := 0; i < diff; i++ {
-		ce.pushValue(0) // reserved bytes
-	}
-
 	ce.callFunction(ctx, m, ce.compiled)
 
 	results = wasm.PopValues(ce.source.Type.ResultNumInUint64, ce.popValue)
