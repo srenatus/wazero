@@ -12,7 +12,7 @@ import (
 )
 
 // TestAmd64Compiler_indirectCallWithTargetOnCallingConvReg is the regression test for #526.
-// In short, the offset register for call_indirect might be the same as amd64CallingConventionModuleInstanceAddressRegister
+// In short, the offset register for call_indirect might be the same as amd64CallingConventionDestinationFunctionModuleInstanceAddressRegister
 // and that must not be a failure.
 func TestAmd64Compiler_indirectCallWithTargetOnCallingConvReg(t *testing.T) {
 	env := newCompilerEnvironment()
@@ -54,7 +54,7 @@ func TestAmd64Compiler_indirectCallWithTargetOnCallingConvReg(t *testing.T) {
 	require.NoError(t, err)
 
 	// Place the offset into the calling-convention reserved register.
-	offsetLoc := compiler.pushRuntimeValueLocationOnRegister(amd64CallingConventionModuleInstanceAddressRegister,
+	offsetLoc := compiler.pushRuntimeValueLocationOnRegister(amd64CallingConventionDestinationFunctionModuleInstanceAddressRegister,
 		runtimeValueTypeI32)
 	compiler.assembler.CompileConstToRegister(amd64.MOVQ, 0, offsetLoc.register)
 
