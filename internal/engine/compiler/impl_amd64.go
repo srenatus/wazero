@@ -4623,114 +4623,102 @@ func (c *amd64Compiler) compileCallFunctionImpl(functionAddressRegister asm.Regi
 // Note: this is the counterpart for callFunction, and see the comments there as well
 // to understand how the function calls are achieved.
 func (c *amd64Compiler) compileReturnFunction() error {
-	// TODO
-	//// Release all the registers as our calling convention requires the caller-save.
-	//if err := c.compileReleaseAllRegistersToStack(); err != nil {
-	//	return err
-	//}
+	// Release all the registers as our calling convention requires the caller-save.
+	if err := c.compileReleaseAllRegistersToStack(); err != nil {
+		return err
+	}
+
+	// amd64CallingConventionModuleInstanceAddressRegister holds the module intstance's address
+	// so mark it used so that it won't be used as a free register.
+	c.locationStack.markRegisterUsed(amd64CallingConventionModuleInstanceAddressRegister)
+	defer c.locationStack.markRegisterUnused(amd64CallingConventionModuleInstanceAddressRegister)
+
+	// Obtain the temporary registers to be used in the followings.
+	regs, found := c.locationStack.takeFreeRegisters(registerTypeGeneralPurpose, 3)
+	if !found {
+		panic("BUG: all the registers should be free at this point: " + c.locationStack.String())
+	}
+	c.locationStack.markRegisterUsed(regs...)
+
+	// Alias these free tmp registers for readability.
+	decrementedCallFrameStackPointerRegister, callFrameStackTopAddressRegister, tmpRegister := regs[0], regs[1], regs[2]
+
+	jmpIfNotCallStackPointerZero := c.assembler.CompileJump(amd64.JNE)
+
+	// If the callframe stack pointer equals the previous one,
+	// we exit the Compiler call with returned status.
+	c.compileExitFromNativeCode(nativeCallStatusCodeReturned)
+
+	// Otherwise, we return back to the top call frame.
 	//
-	//// amd64CallingConventionModuleInstanceAddressRegister holds the module intstance's address
-	//// so mark it used so that it won't be used as a free register.
-	//c.locationStack.markRegisterUsed(amd64CallingConventionModuleInstanceAddressRegister)
-	//defer c.locationStack.markRegisterUnused(amd64CallingConventionModuleInstanceAddressRegister)
+	// Since call frame stack pointer is the index for callEngine.callFrameStack slice,
+	// here we get the actual offset in bytes via shifting decrementedCallFrameStackPointerRegister by callFrameDataSizeMostSignificantSetBit.
+	// That is valid because the size of callFrame struct is a power of 2 (see TestVerifyOffsetValue), which means
+	// multiplying withe the size of struct equals shifting by its most significant bit.
+	c.assembler.SetJumpTargetOnNext(jmpIfNotCallStackPointerZero)
+	c.assembler.CompileConstToRegister(amd64.SHLQ, int64(callFrameDataSizeMostSignificantSetBit), decrementedCallFrameStackPointerRegister)
+
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackElement0AddressOffset, tmpRegister)
+
+	c.assembler.CompileMemoryWithIndexToRegister(amd64.LEAQ,
+		tmpRegister, 0, decrementedCallFrameStackPointerRegister, 1,
+		callFrameStackTopAddressRegister)
+
+	// At this point, decrementedCallFrameStackPointerRegister holds the offset in call frame slice in bytes,
+	// and tmpRegister holds the absolute address of the first item of call frame slice.
+	// To illustrate the situation:
 	//
-	//// Obtain the temporary registers to be used in the followings.
-	//regs, found := c.locationStack.takeFreeRegisters(registerTypeGeneralPurpose, 3)
-	//if !found {
-	//	panic("BUG: all the registers should be free at this point: " + c.locationStack.String())
-	//}
-	//c.locationStack.markRegisterUsed(regs...)
+	//  tmpRegister (holding the absolute address of &callFrame[0])
+	//      |                              callFrameStackTopAddressRegister (absolute address of tmpRegister+decrementedCallFrameStackPointerRegister)
+	//      |                                           |
+	//      [......., ra.caller, rb.caller, rc.caller, _, ra.current, rb.current, rc.current, _, ...]  <--- call frame stack's data region (somewhere in the memory)
+	//      |                                           |
+	//      |------------------------------------------->
+	//           decrementedCallFrameStackPointerRegister (holding the offset from &callFrame[0] in bytes.)
 	//
-	//// Alias these free tmp registers for readability.
-	//decrementedCallFrameStackPointerRegister, callFrameStackTopAddressRegister, tmpRegister := regs[0], regs[1], regs[2]
+	// where:
+	//      ra.* = callFrame.returnAddress
+	//      rb.* = callFrame.returnStackBasePointer
+	//      rc.* = callFrame.code
+	//      _  = callFrame's padding (see comment on callFrame._ field.)
 	//
-	//// Since we return from the function, we need to decrement the callframe stack pointer.
-	//c.assembler.CompileNoneToMemory(amd64.DECQ, amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackPointerOffset)
-	//
-	//// next, get the decremented callframe stack pointer into decrementedCallFrameStackPointerRegister.
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackPointerOffset,
-	//	decrementedCallFrameStackPointerRegister)
-	//
-	//// We have to exit if the decremented stack pointer equals zero.
-	//c.assembler.CompileRegisterToRegister(amd64.TESTQ, decrementedCallFrameStackPointerRegister, decrementedCallFrameStackPointerRegister)
-	//
-	//jmpIfNotCallStackPointerZero := c.assembler.CompileJump(amd64.JNE)
-	//
-	//// If the callframe stack pointer equals the previous one,
-	//// we exit the Compiler call with returned status.
-	//c.compileExitFromNativeCode(nativeCallStatusCodeReturned)
-	//
-	//// Otherwise, we return back to the top call frame.
-	////
-	//// Since call frame stack pointer is the index for callEngine.callFrameStack slice,
-	//// here we get the actual offset in bytes via shifting decrementedCallFrameStackPointerRegister by callFrameDataSizeMostSignificantSetBit.
-	//// That is valid because the size of callFrame struct is a power of 2 (see TestVerifyOffsetValue), which means
-	//// multiplying withe the size of struct equals shifting by its most significant bit.
-	//c.assembler.SetJumpTargetOnNext(jmpIfNotCallStackPointerZero)
-	//c.assembler.CompileConstToRegister(amd64.SHLQ, int64(callFrameDataSizeMostSignificantSetBit), decrementedCallFrameStackPointerRegister)
-	//
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	amd64ReservedRegisterForCallEngine, callEngineGlobalContextCallFrameStackElement0AddressOffset, tmpRegister)
-	//
-	//c.assembler.CompileMemoryWithIndexToRegister(amd64.LEAQ,
-	//	tmpRegister, 0, decrementedCallFrameStackPointerRegister, 1,
-	//	callFrameStackTopAddressRegister)
-	//
-	//// At this point, decrementedCallFrameStackPointerRegister holds the offset in call frame slice in bytes,
-	//// and tmpRegister holds the absolute address of the first item of call frame slice.
-	//// To illustrate the situation:
-	////
-	////  tmpRegister (holding the absolute address of &callFrame[0])
-	////      |                              callFrameStackTopAddressRegister (absolute address of tmpRegister+decrementedCallFrameStackPointerRegister)
-	////      |                                           |
-	////      [......., ra.caller, rb.caller, rc.caller, _, ra.current, rb.current, rc.current, _, ...]  <--- call frame stack's data region (somewhere in the memory)
-	////      |                                           |
-	////      |------------------------------------------->
-	////           decrementedCallFrameStackPointerRegister (holding the offset from &callFrame[0] in bytes.)
-	////
-	//// where:
-	////      ra.* = callFrame.returnAddress
-	////      rb.* = callFrame.returnStackBasePointer
-	////      rc.* = callFrame.code
-	////      _  = callFrame's padding (see comment on callFrame._ field.)
-	////
-	//// What we have to do in the following is that
-	////   1) Set callEngine.valueStackContext.stackBasePointer to the value on "rb.caller".
-	////   2) Load rc.caller.moduleInstanceAddress into amd64CallingConventionModuleInstanceAddressRegister.
-	////   3) Jump into the address of "ra.caller".
-	//
-	//// 1) Set callEngine.valueStackContext.stackBasePointer to the value on "rb.caller"
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	// "rb.caller" is BELOW the top address. See the above example for detail.
-	//	callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameReturnStackBasePointerInBytesOffset),
-	//	tmpRegister,
-	//)
-	//c.assembler.CompileRegisterToMemory(amd64.MOVQ,
-	//	tmpRegister, amd64ReservedRegisterForCallEngine, callEngineValueStackContextStackBasePointerInBytesOffset)
-	//
-	//// 2) Load rc.caller.moduleInstanceAddress into amd64CallingConventionModuleInstanceAddressRegister
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	// "rc.caller" is BELOW the top address. See the above example for detail.
-	//	callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameFunctionOffset),
-	//	amd64CallingConventionModuleInstanceAddressRegister,
-	//)
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	amd64CallingConventionModuleInstanceAddressRegister, functionModuleInstanceAddressOffset,
-	//	amd64CallingConventionModuleInstanceAddressRegister,
-	//)
-	//
-	//// 3) Jump into the address of "ra.caller".
-	//c.assembler.CompileMemoryToRegister(amd64.MOVQ,
-	//	// "ra.caller" is BELOW the top address. See the above example for detail.
-	//	callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameReturnAddressOffset),
-	//	tmpRegister,
-	//)
-	//
-	//c.assembler.CompileJumpToRegister(amd64.JMP, tmpRegister)
-	//
-	//// They were temporarily used, so we mark them unused.
-	//c.locationStack.markRegisterUnused(regs...)
+	// What we have to do in the following is that
+	//   1) Set callEngine.valueStackContext.stackBasePointer to the value on "rb.caller".
+	//   2) Load rc.caller.moduleInstanceAddress into amd64CallingConventionModuleInstanceAddressRegister.
+	//   3) Jump into the address of "ra.caller".
+
+	// 1) Set callEngine.valueStackContext.stackBasePointer to the value on "rb.caller"
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		// "rb.caller" is BELOW the top address. See the above example for detail.
+		callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameReturnStackBasePointerInBytesOffset),
+		tmpRegister,
+	)
+	c.assembler.CompileRegisterToMemory(amd64.MOVQ,
+		tmpRegister, amd64ReservedRegisterForCallEngine, callEngineValueStackContextStackBasePointerInBytesOffset)
+
+	// 2) Load rc.caller.moduleInstanceAddress into amd64CallingConventionModuleInstanceAddressRegister
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		// "rc.caller" is BELOW the top address. See the above example for detail.
+		callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameFunctionOffset),
+		amd64CallingConventionModuleInstanceAddressRegister,
+	)
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		amd64CallingConventionModuleInstanceAddressRegister, functionModuleInstanceAddressOffset,
+		amd64CallingConventionModuleInstanceAddressRegister,
+	)
+
+	// 3) Jump into the address of "ra.caller".
+	c.assembler.CompileMemoryToRegister(amd64.MOVQ,
+		// "ra.caller" is BELOW the top address. See the above example for detail.
+		callFrameStackTopAddressRegister, -(callFrameDataSize - callFrameReturnAddressOffset),
+		tmpRegister,
+	)
+
+	c.assembler.CompileJumpToRegister(amd64.JMP, tmpRegister)
+
+	// They were temporarily used, so we mark them unused.
+	c.locationStack.markRegisterUnused(regs...)
 	return nil
 }
 

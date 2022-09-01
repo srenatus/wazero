@@ -147,8 +147,11 @@ type (
 	}
 
 	// callFrame holds the information to which the caller function can return.
+	// This is mixed in callEngine.valueStack with other Wasm values just like any other
+	// native program (where the stack is the system stack though), and we retrieve the struct
+	// with unsafe pointer casts.
 	callFrame struct {
-		// returnAddress is the return address to which the engine jump when the callee function returns.
+		// returnAddress is the return address to which the engine jumps when the callee function returns.
 		returnAddress uintptr
 		// returnStackBasePointerInBytes is the stack base pointer to set on valueStackContext.stackBasePointerInBytes
 		// when the callee function returns.
