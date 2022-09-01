@@ -107,7 +107,7 @@ func (c *controlFrames) push(frame *controlFrame) {
 }
 
 // calcLocalIndexToStackHeight initializes localIndexToStackHeight field. See the comment on compiler.localIndexToStackHeightInUint64.
-func (c *compiler) calcLocalIndexToStackHeight() (callFrameIndexInUint64 int) {
+func (c *compiler) calcLocalIndexToStackHeight() (callFrameIndexInUint64 uint64) {
 	c.localIndexToStackHeightInUint64 = make(map[uint32]int, len(c.sig.Params)+len(c.localTypes))
 	var current int
 	for index, lt := range c.sig.Params {
@@ -124,7 +124,7 @@ func (c *compiler) calcLocalIndexToStackHeight() (callFrameIndexInUint64 int) {
 	}
 
 	// Non-func param locals start after the return call frame.
-	callFrameIndexInUint64 = current
+	callFrameIndexInUint64 = uint64(current)
 	current += c.callFrameStackSizeInUint64
 
 	for index, lt := range c.localTypes {
@@ -233,7 +233,7 @@ type CompilationResult struct {
 	// HasDataInstances is true if the module has element instances which might be used by table.init or elem.drop instructions.
 	HasElementInstances bool
 	// CallFrameIndexInUint64 holds the index to the uint64 stack where the caller's frame starts at.
-	CallFrameIndexInUint64 int
+	CallFrameIndexInUint64 uint64
 }
 
 func CompileFunctions(_ context.Context, enabledFeatures wasm.Features, callFrameStackSizeInUint64 int, module *wasm.Module) ([]*CompilationResult, error) {

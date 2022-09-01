@@ -545,6 +545,9 @@ func (ce *callEngine) Call(ctx context.Context, callCtx *wasm.CallContext, param
 	for _, v := range params {
 		ce.pushValue(v)
 	}
+
+	// TODO: reserve the empty call frame!
+
 	ce.execWasmFunction(ctx, callCtx)
 	results = wasm.PopValues(ce.source.Type.ResultNumInUint64, ce.popValue)
 	return

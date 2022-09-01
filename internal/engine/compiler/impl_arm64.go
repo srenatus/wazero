@@ -174,7 +174,7 @@ func (c *arm64Compiler) markRegisterUnused(regs ...asm.Register) {
 
 func (c *arm64Compiler) String() (ret string) { return c.locationStack.String() }
 
-// pushFunctionParams pushes any function parameters onto the stack, setting appropriate register types.
+// pushFunctionArgsAndFrame pushes any function parameters onto the stack, setting appropriate register types.
 func (c *arm64Compiler) pushFunctionParams() {
 	for _, t := range c.ir.Signature.Params {
 		loc := c.locationStack.pushRuntimeValueLocationOnStack()
